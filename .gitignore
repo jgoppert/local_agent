@@ -1,0 +1,24 @@
+# Downloaded models, including weights placed outside models/.
+/models/
+*.gguf
+*.gguf.part
+*.safetensors
+*.safetensors.part
+*.ckpt
+*.pt
+*.pth
+pytorch_model*.bin
+
+# Nix build outputs and local runtime links.
+/.opencode-runtime
+/.profile-runtime
+/llama-cpp
+/result
+/result-*
+
+# Local credentials and scratch files.
+/config.local.toml
+.env
+.env.*
+!.env.example
+*.log

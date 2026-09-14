@@ -1,0 +1,22 @@
+# Default preset: Qwen3.8-27B Q4_K_M on an RTX 3090 (24 GB).
+# Put machine-specific overrides in config.local.toml (ignored by Git).
+# Only the model host uses these settings; SSH clients use the host's config.
+
+[hardware]
+backend = "cuda" # cuda, vulkan, or cpu
+cuda_capabilities = ["8.6"] # NVIDIA compute capabilities; ignored by other backends
+
+[server]
+gpu_layers = "all" # "all", "auto", or a nonnegative integer; CPU always uses 0
+context = 32768
+threads = 8
+parallel = 1
+flash_attention = "on" # on, off, auto
+cache_type = "q8_0" # use f16 for a conservative starting point on other hardware
+reasoning = "low" # none, low, medium, high
+speculation = "draft-mtp" # none or draft-mtp (requires the default model's MTP head)
+draft_tokens = 3
+max_tokens = 4096
+
+[power]
+watts = 250 # Used only when you explicitly run scripts/powercap.sh; 0 disables it

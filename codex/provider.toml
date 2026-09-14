@@ -1,0 +1,6 @@
+# Appended to ~/.codex/config.toml by setup.sh. Defines the local llama.cpp provider.
+
+[model_providers.llamacpp]
+name = "llama.cpp (local Qwen3.8-27B)"
+base_url = "http://127.0.0.1:8080/v1"
+wire_api = "responses"
