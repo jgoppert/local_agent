@@ -1,0 +1,11 @@
+Qwen3.8-27B
+Copyright 2026 Alibaba Cloud
+License: Apache-2.0 (see MODEL-LICENSE)
+Original model: https://huggingface.co/Qwen/Qwen3.8-27B
+
+Quantized GGUF: Unsloth Qwen3.8-27B-UD-Q4_K_M
+Source: https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/tree/4ca720788d1e01f1bff70c033e0d0028fd02e502
+SHA-256: 322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482
+
+This image splits the quantized GGUF into five files using llama-gguf-split.
+The tensor values are unchanged. The original single-file GGUF is not included.

@@ -1,0 +1,5 @@
+# Allow only image inputs; never send local weights, credentials, or Nix outputs.
+**
+!Dockerfile
+!docker/
+!docker/**
