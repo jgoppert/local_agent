@@ -7,9 +7,10 @@ let
   '';
 in
 pkgs.symlinkJoin {
-  name = "qwen-tools";
+  name = "local_agent-tools";
   paths = [
+    (launcher "local_agent" "chat.sh")
+    # Existing shells and scripts can keep using the previous OpenCode command.
     (launcher "qwen" "chat.sh")
-    (launcher "codex-qwen" "scripts/codex-qwen.sh")
   ];
 }

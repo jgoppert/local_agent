@@ -2,6 +2,9 @@
 # Put machine-specific overrides in config.local.toml (ignored by Git).
 # Only the model host uses these settings; SSH clients use the host's config.
 
+[model]
+default = "qwen3.8-27b" # Override per launch with --model NAME or LOCAL_AGENT_MODEL
+
 [hardware]
 backend = "cuda" # cuda, vulkan, or cpu
 cuda_capabilities = ["8.6"] # NVIDIA compute capabilities; ignored by other backends
@@ -14,7 +17,7 @@ parallel = 1
 flash_attention = "on" # on, off, auto
 cache_type = "q8_0" # use f16 for a conservative starting point on other hardware
 reasoning = "low" # none, low, medium, high
-speculation = "draft-mtp" # none or draft-mtp (requires the default model's MTP head)
+speculation = "none" # Model presets can enable draft-mtp when supported
 draft_tokens = 3
 max_tokens = 4096
 

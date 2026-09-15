@@ -1,0 +1,12 @@
+# Model catalog. Add a table here, or under [models.NAME] in config.local.toml.
+# Each entry describes one GGUF file supported by the pinned llama.cpp runtime.
+# Optional server settings override config.toml; local server settings win.
+
+["qwen3.8-27b"]
+name = "Qwen3.8 27B Q4_K_M"
+file = "Qwen3.8-27B-UD-Q4_K_M.gguf"
+url = "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q4_K_M.gguf"
+size = 16464440224
+
+["qwen3.8-27b".server]
+speculation = "draft-mtp"

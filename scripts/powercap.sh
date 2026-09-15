@@ -2,13 +2,13 @@
 # Cap GPU power to keep temperatures down during inference. Resets on reboot.
 # NVIDIA only. Usage: ./scripts/powercap.sh [watts] (default from config.toml).
 set -euo pipefail
-qwen_dir="$(dirname "$(dirname "$(readlink -f "$0")")")"
-source "$qwen_dir/scripts/read-config.sh"
-if [[ "$QWEN_CFG_BACKEND" != cuda ]]; then
+repo_dir="$(dirname "$(dirname "$(readlink -f "$0")")")"
+source "$repo_dir/scripts/read-config.sh"
+if [[ "$LOCAL_AGENT_CFG_BACKEND" != cuda ]]; then
   printf 'The power-cap helper applies only to the CUDA/NVIDIA backend.\n' >&2
   exit 1
 fi
-watts="${1:-$QWEN_CFG_POWER_WATTS}"
+watts="${1:-$LOCAL_AGENT_CFG_POWER_WATTS}"
 if [[ ! "$watts" =~ ^[0-9]+$ ]]; then
   printf 'Power cap must be a nonnegative integer in watts.\n' >&2; exit 2
 fi
