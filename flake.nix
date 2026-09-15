@@ -16,8 +16,10 @@
         default = images.model;
         dockerImage = images.model;
         dockerRuntime = images.runtime;
+        dockerBuildDeps = images.buildDeps;
         skopeo = pkgs.skopeo;
       };
+      lib.containerCacheKey = images.cacheKey;
       checks.${system}.container-scripts = pkgs.runCommand "check-container-scripts" {
         nativeBuildInputs = [ pkgs.shellcheck ];
       } ''

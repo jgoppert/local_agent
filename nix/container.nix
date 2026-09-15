@@ -35,10 +35,13 @@ let
     done
   '';
 
-  makeImage = withModel: pkgs.dockerTools.buildLayeredImage {
+  makeImage = withModel: imageRevision: pkgs.dockerTools.buildLayeredImage {
     name = "local_agent";
     tag = if withModel then "latest" else "runtime-check";
     fromImage = base;
+    # Skopeo compresses individual layers for GHCR. Compressing the outer
+    # archive first adds a full compression/decompression pass over the model.
+    compressor = "none";
     maxLayers = 125;
     contents = pkgs.lib.optionals withModel [
       shards.part1 shards.part2 shards.part3 shards.part4 shards.part5
@@ -70,13 +73,21 @@ let
       };
       Labels = {
         "org.opencontainers.image.source" = "https://github.com/jgoppert/local_agent";
-        "org.opencontainers.image.revision" = revision;
+        "org.opencontainers.image.revision" = imageRevision;
         "org.opencontainers.image.title" = "local_agent Qwen model server";
         "org.opencontainers.image.description" = "Qwen3.8-27B Q4_K_M with CUDA, built by a Nix flake";
       };
     };
   };
 in {
-  runtime = makeImage false;
-  model = makeImage true;
+  runtime = makeImage false revision;
+  model = makeImage true revision;
+  # Ignore only the provenance label when checking for an already-published
+  # image. Every actual Nix build input still participates in this key.
+  cacheKey = builtins.substring 0 32 (builtins.baseNameOf (makeImage true "").drvPath);
+  buildDeps = pkgs.linkFarm "container-build-deps" [
+    { name = "base-image"; path = base; }
+    { name = "gguf-tools"; path = pkgs.llama-cpp; }
+    { name = "skopeo"; path = pkgs.skopeo; }
+  ];
 }

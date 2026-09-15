@@ -295,6 +295,23 @@ five model shards and layer sizes, and publishes the archive with Skopeo.
 It uses the automatic `GITHUB_TOKEN` with `packages: write`; no registry
 password or extra secret is required.
 
+CI caches the pinned CUDA base image and Nix build tools between jobs and
+runs. The dependency cache targets 6 GiB of Nix store data; the 16.5 GB model
+and final image stay in GHCR, outside the repository's 10 GB Actions cache.
+The local Docker archive is uncompressed because Skopeo compresses its layers
+for upload, avoiding an extra compression and decompression of the full image.
+
+After a successful build, CI also publishes a `build-<Nix input hash>` tag.
+When those inputs are unchanged, later runs reuse the image by digest without
+downloading the model, splitting weights, rebuilding the image, or uploading
+its layers again. Workflow, Compose, documentation, and test-only edits can
+use this path. Changes to the model, base image, Nix build definitions,
+entrypoint, or bundled licenses produce a new build when they affect the
+derivation. The first build for new inputs still downloads and packages the
+model. Reused images retain the revision label of the commit that originally
+built them; each publish still receives its current commit tag and deployment
+record. The Actions summary reports whether the image was reused.
+
 | Trigger | Result |
 |---|---|
 | Pull request changing image inputs | Flake, Compose, runtime and profile checks without the model download |

@@ -38,6 +38,15 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - name: Restore and cache Nix build dependencies
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          primary-key: nix-container-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'nix/container.nix') }}
+          restore-prefixes-first-match: nix-container-v1-${{ runner.os }}-${{ runner.arch }}-
+          gc-max-store-size-linux: 6G
+          save: ${{ github.event_name != 'pull_request' }}
+      - name: Keep the base image and build tools in the cache
+        run: nix build .#dockerBuildDeps --print-build-logs --out-link result-build-deps
       - name: Check flake and Compose configuration
         run: |
           nix flake check --print-build-logs
@@ -53,6 +62,8 @@ jobs:
           grep -q 'draft-mtp' /tmp/llama-help.txt
           docker run --rm --network none -e LOCAL_AGENT_GPU_PROFILE=rtx-pro-6000-blackwell local_agent:runtime-check --help > /dev/null
           bash docker/test-profiles.sh local_agent:runtime-check
+      - name: Allow the temporary runtime archive to be removed before caching
+        run: rm result-runtime
 
   publish:
     name: Build flake image and publish to GHCR
@@ -70,26 +81,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Make room for model and image builds
-        run: |
-          # This is a disposable GitHub-hosted runner; none of these SDKs are used.
-          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet /opt/hostedtoolcache /usr/local/swift /usr/lib/jvm
-          df -h /
-          available=$(df --output=avail -B1 / | tail -n 1)
-          if (( available < 60000000000 )); then
-            echo 'At least 60 GB of free disk is required for the bundled model build.' >&2
-            exit 1
-          fi
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
-      - name: Build the complete image using the locked flake
-        run: nix build .#dockerImage --print-build-logs --out-link result-image
-      - name: Verify all model shards and GHCR layer limits
-        run: python3 docker/check-image.py result-image
-      - name: Free build-only dependencies before upload
-        run: nix store gc
-      - name: Choose registry image
+      - name: Choose registry image and build cache key
         id: image
-        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+        run: |
+          image_name="ghcr.io/${GITHUB_REPOSITORY,,}"
+          cache_key=$(nix eval --raw .#lib.containerCacheKey)
+          echo "name=$image_name" >> "$GITHUB_OUTPUT"
+          echo "cache=$image_name:build-$cache_key" >> "$GITHUB_OUTPUT"
       - name: Choose image tags
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
@@ -106,23 +105,78 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check for a published image with identical build inputs
+        id: cached
+        env:
+          CACHE_IMAGE: ${{ steps.image.outputs.cache }}
+        run: |
+          nix build .#skopeo --out-link result-skopeo
+          if digest=$(result-skopeo/bin/skopeo inspect --authfile "$HOME/.docker/config.json" \
+              --no-tags --format '{{.Digest}}' "docker://$CACHE_IMAGE"); then
+            echo "source=docker://${CACHE_IMAGE%:*}@$digest" >> "$GITHUB_OUTPUT"
+            echo 'hit=true' >> "$GITHUB_OUTPUT"
+            echo 'Reusing the published image; skipping model download and image build.'
+          else
+            echo 'hit=false' >> "$GITHUB_OUTPUT"
+            echo 'No usable image cache found; building from the locked flake.'
+          fi
+      - name: Make room for model and image builds
+        if: steps.cached.outputs.hit != 'true'
+        run: |
+          # This is a disposable GitHub-hosted runner; none of these SDKs are used.
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet /opt/hostedtoolcache /usr/local/swift /usr/lib/jvm
+          df -h /
+          available=$(df --output=avail -B1 / | tail -n 1)
+          if (( available < 60000000000 )); then
+            echo 'At least 60 GB of free disk is required for the bundled model build.' >&2
+            exit 1
+          fi
+      - name: Restore Nix dependencies from the check job
+        if: steps.cached.outputs.hit != 'true'
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          primary-key: nix-container-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'nix/container.nix') }}
+          restore-prefixes-first-match: nix-container-v1-${{ runner.os }}-${{ runner.arch }}-
+          # The model and final image exceed this repository's 10 GB cache.
+          # Only the check job saves the smaller dependency cache.
+          save: false
+      - name: Build the complete image using the locked flake
+        if: steps.cached.outputs.hit != 'true'
+        run: nix build .#dockerImage --print-build-logs --out-link result-image
+      - name: Verify all model shards and GHCR layer limits
+        if: steps.cached.outputs.hit != 'true'
+        run: python3 docker/check-image.py result-image
+      - name: Free build-only dependencies before upload
+        if: steps.cached.outputs.hit != 'true'
+        run: nix store gc
       - name: Publish the flake image and record its digest
         env:
           IMAGE_NAME: ${{ steps.image.outputs.name }}
           IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+          CACHE_IMAGE: ${{ steps.image.outputs.cache }}
+          CACHED_SOURCE: ${{ steps.cached.outputs.source }}
+          CACHE_HIT: ${{ steps.cached.outputs.hit }}
         run: |
           first_tag=$(head -n 1 <<< "$IMAGE_TAGS")
-          nix run .#skopeo -- copy --authfile "$HOME/.docker/config.json" \
+          source_image="${CACHED_SOURCE:-docker-archive:result-image}"
+          result-skopeo/bin/skopeo copy --authfile "$HOME/.docker/config.json" \
             --digestfile "$RUNNER_TEMP/image-digest.txt" \
-            docker-archive:result-image "docker://$first_tag"
+            "$source_image" "docker://$first_tag"
+          published_image="$IMAGE_NAME@$(cat "$RUNNER_TEMP/image-digest.txt")"
           while IFS= read -r tag; do
             if [[ "$tag" != "$first_tag" ]]; then
-              nix run .#skopeo -- copy --authfile "$HOME/.docker/config.json" \
-                --preserve-digests "docker://$first_tag" "docker://$tag"
+              result-skopeo/bin/skopeo copy --authfile "$HOME/.docker/config.json" \
+                --preserve-digests "docker://$published_image" "docker://$tag"
             fi
           done <<< "$IMAGE_TAGS"
+          if [[ "$CACHE_HIT" != true ]]; then
+            result-skopeo/bin/skopeo copy --authfile "$HOME/.docker/config.json" \
+              --preserve-digests "docker://$published_image" "docker://$CACHE_IMAGE"
+          fi
           {
             echo '## Published Qwen container (Nix flake)'
             printf '\n%s\n' "$IMAGE_TAGS"
-            printf '\nDigest: %s@%s\n' "$IMAGE_NAME" "$(cat "$RUNNER_TEMP/image-digest.txt")"
+            printf '\nDigest: %s\n' "$published_image"
+            printf '\nReused published image: %s\n' "$CACHE_HIT"
+            printf '\nBuild cache: %s\n' "$CACHE_IMAGE"
           } >> "$GITHUB_STEP_SUMMARY"
