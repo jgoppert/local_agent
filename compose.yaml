@@ -1,0 +1,11 @@
+services:
+  model:
+    image: ghcr.io/jgoppert/local_agent:latest
+    pull_policy: never
+    network_mode: host
+    gpus: all
+    restart: unless-stopped
+    environment:
+      LOCAL_AGENT_GPU_PROFILE: ${LOCAL_AGENT_GPU_PROFILE:-rtx3090}
+      LLAMA_ARG_HOST: 127.0.0.1
+      LLAMA_ARG_PORT: ${PORT:-8080}

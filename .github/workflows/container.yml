@@ -3,16 +3,20 @@ name: Build and publish Qwen container
 on:
   pull_request:
     paths:
-      - Dockerfile
-      - .dockerignore
+      - flake.nix
+      - flake.lock
+      - nix/container.nix
+      - compose.yaml
       - docker/**
       - .github/workflows/container.yml
   push:
     branches: [main]
     tags: ['v*']
     paths:
-      - Dockerfile
-      - .dockerignore
+      - flake.nix
+      - flake.lock
+      - nix/container.nix
+      - compose.yaml
       - docker/**
       - .github/workflows/container.yml
   workflow_dispatch:
@@ -26,33 +30,32 @@ concurrency:
 
 jobs:
   check:
-    name: Check container runtime
+    name: Check flake and container profiles
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
-      - name: Build runtime without downloading weights
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          target: runtime
-          platforms: linux/amd64
-          load: true
-          tags: local_agent:check
-      - name: Check binary and model preset flags without a GPU
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - name: Check flake and Compose configuration
         run: |
-          docker run --rm local_agent:check --version
-          docker run --rm local_agent:check --help > /tmp/llama-help.txt
+          nix flake check --print-build-logs
+          docker compose config -q
+      - name: Build runtime from the flake without model weights
+        run: |
+          nix build .#dockerRuntime --print-build-logs --out-link result-runtime
+          docker load < result-runtime
+      - name: Check both GPU profiles with networking disabled
+        run: |
+          docker run --rm --network none local_agent:runtime-check --version
+          docker run --rm --network none local_agent:runtime-check --help > /tmp/llama-help.txt
           grep -q 'draft-mtp' /tmp/llama-help.txt
-          docker run --rm -e LOCAL_AGENT_GPU_PROFILE=rtx-pro-6000-blackwell local_agent:check --help > /dev/null
-      - name: Check default and Blackwell profiles and explicit overrides
-        run: bash docker/test-profiles.sh local_agent:check
+          docker run --rm --network none -e LOCAL_AGENT_GPU_PROFILE=rtx-pro-6000-blackwell local_agent:runtime-check --help > /dev/null
+          bash docker/test-profiles.sh local_agent:runtime-check
 
   publish:
-    name: Publish bundled Qwen image
+    name: Build flake image and publish to GHCR
     needs: check
     if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-24.04
@@ -64,21 +67,27 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Make room for weights, shards, and image export
+      - name: Make room for model and image builds
         run: |
-          # Only remove preinstalled SDKs on this disposable GitHub-hosted runner.
-          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet /opt/hostedtoolcache
-          df -h / /var/lib/docker
-          available=$(df --output=avail -B1 /var/lib/docker | tail -n 1)
-          if (( available < 55000000000 )); then
-            echo 'At least 55 GB of free disk is required to build the bundled model.' >&2
+          # This is a disposable GitHub-hosted runner; none of these SDKs are used.
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet /opt/hostedtoolcache /usr/local/swift /usr/lib/jvm
+          df -h /
+          available=$(df --output=avail -B1 / | tail -n 1)
+          if (( available < 60000000000 )); then
+            echo 'At least 60 GB of free disk is required for the bundled model build.' >&2
             exit 1
           fi
-      - uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - name: Build the complete image using the locked flake
+        run: nix build .#dockerImage --print-build-logs --out-link result-image
+      - name: Verify all model shards and GHCR layer limits
+        run: python3 docker/check-image.py result-image
+      - name: Free build-only dependencies before upload
+        run: nix store gc
       - name: Choose registry image
         id: image
         run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
-      - name: Image tags and labels
+      - name: Choose image tags
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
@@ -88,35 +97,29 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=tag
             type=sha,format=long
-          labels: |
-            org.opencontainers.image.title=local_agent Qwen model server
-            org.opencontainers.image.description=Qwen3.8-27B Q4_K_M weights with the llama.cpp CUDA server
       - name: Log in to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and push image with weights
-        id: build
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          target: model
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          # Do not export the intermediate 16.5 GB weights layer to a registry cache.
-          provenance: mode=min
-      - name: Record published image
+      - name: Publish the flake image and record its digest
         env:
           IMAGE_NAME: ${{ steps.image.outputs.name }}
-          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
           IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
         run: |
+          first_tag=$(head -n 1 <<< "$IMAGE_TAGS")
+          nix run .#skopeo -- copy --authfile "$HOME/.docker/config.json" \
+            --digestfile "$RUNNER_TEMP/image-digest.txt" \
+            docker-archive:result-image "docker://$first_tag"
+          while IFS= read -r tag; do
+            if [[ "$tag" != "$first_tag" ]]; then
+              nix run .#skopeo -- copy --authfile "$HOME/.docker/config.json" \
+                --preserve-digests "docker://$first_tag" "docker://$tag"
+            fi
+          done <<< "$IMAGE_TAGS"
           {
-            echo '## Published Qwen container'
+            echo '## Published Qwen container (Nix flake)'
             printf '\n%s\n' "$IMAGE_TAGS"
-            printf '\nDigest: %s@%s\n' "$IMAGE_NAME" "$IMAGE_DIGEST"
+            printf '\nDigest: %s@%s\n' "$IMAGE_NAME" "$(cat "$RUNNER_TEMP/image-digest.txt")"
           } >> "$GITHUB_STEP_SUMMARY"

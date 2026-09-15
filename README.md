@@ -117,57 +117,67 @@ The optional NVIDIA power-cap helper uses `power.watts` from the configuration
 
 ## Docker image with Qwen included
 
-The [`container.yml`](.github/workflows/container.yml) workflow publishes
-`ghcr.io/jgoppert/local_agent:latest`: a **linux/amd64 CUDA model server with
-Qwen3.8-27B Q4_K_M already in the image**. It serves the model API and llama.cpp
-web UI. OpenCode runs separately on your project machine.
+The [Nix flake](flake.nix) builds `ghcr.io/jgoppert/local_agent:latest`, a
+**linux/amd64 CUDA model server with Qwen3.8-27B Q4_K_M already included**.
+It contains the weights, llama.cpp server and web UI, and CUDA userspace
+libraries. OpenCode runs separately on your project machine.
 
-The model host needs Docker, an NVIDIA GPU with enough VRAM (the default
-preset targets a 24 GB RTX 3090), a compatible NVIDIA driver, and the
+The host needs Docker, a compatible NVIDIA driver, and the
 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
-It does not need Nix or a systemd user session. Allow about 20 GB for the
-installed image, plus space for Docker's compressed layer storage while pulling.
+The default profile targets an RTX 3090 with 24 GB VRAM. Running the downloaded
+image requires neither Nix nor a systemd user session. Allow about 20 GB for
+the installed image, plus Docker's compressed layer storage while pulling.
+
+### Start with the default RTX 3090 profile
+
+From this checkout, download the image once, then start it with Compose:
 
 ```bash
 docker pull ghcr.io/jgoppert/local_agent:latest
-docker run -d --name local-agent-model --gpus all \
-  --restart unless-stopped \
-  -p 127.0.0.1:8080:8080 \
-  ghcr.io/jgoppert/local_agent:latest
-
-docker logs -f local-agent-model
+docker compose up -d
+docker compose logs -f model
 curl --fail http://127.0.0.1:8080/health  # ready after the model loads
 ```
 
-Use an unused host port if another model server already occupies 8080.
-The API is at `http://127.0.0.1:8080/v1`, with model ID `qwen3.8-27b`.
-The published port is bound to host loopback; remote clients can use an SSH
-tunnel. All weights arrive in the image pull, so startup needs no model
-download or mounted model directory. Manage its lifetime with
-`docker stop local-agent-model` and `docker start local-agent-model`.
+[`compose.yaml`](compose.yaml) defaults to **host networking** and the
+**`rtx3090` profile**. The container can reach the host's services and the
+internet whenever the host has connectivity. The API and web UI bind to
+`127.0.0.1:8080` on the host. Set `PORT=8081 docker compose up -d` if 8080
+is already in use. The API base URL is `http://127.0.0.1:8080/v1`, and the
+model ID is `qwen3.8-27b`. Use `docker compose stop` / `docker compose start`
+to release the model's memory / load it again.
 
-On the same machine, after the container is healthy, the existing `./chat.sh`
-can reuse its API. The client still needs the normal Nix/client prerequisites.
-Keep the client's context and output limits consistent with the container.
-Use Docker to start and stop this server.
-
-### Select an NVIDIA GPU profile
-
-**The default is `rtx3090`.** The command above uses this profile automatically.
-To select a profile explicitly, pass `LOCAL_AGENT_GPU_PROFILE` when creating
-the container. For an **NVIDIA RTX PRO 6000 Blackwell with 96 GB VRAM**, use:
+Host networking is a container launch setting, so it is supplied by Compose.
+The equivalent command without Compose is:
 
 ```bash
-docker run -d --name local-agent-model --gpus all \
+docker run -d --name local-agent-model --gpus all --network host \
   --restart unless-stopped \
-  -p 127.0.0.1:8080:8080 \
-  -e LOCAL_AGENT_GPU_PROFILE=rtx-pro-6000-blackwell \
   ghcr.io/jgoppert/local_agent:latest
 ```
 
-For the RTX 3090, omit that environment option or use
-`-e LOCAL_AGENT_GPU_PROFILE=rtx3090`. Choose one of these run commands;
-changing the profile of an existing container requires recreating it.
+Use one launch method at a time. These host-network commands target Linux.
+If you choose Docker bridge networking instead, add
+`-e LLAMA_ARG_HOST=0.0.0.0 -p 127.0.0.1:8080:8080` in place of `--network host`.
+
+### Select the RTX PRO 6000 Blackwell profile
+
+For an **NVIDIA RTX PRO 6000 Blackwell with 96 GB VRAM**, select the profile
+when starting Compose:
+
+```bash
+LOCAL_AGENT_GPU_PROFILE=rtx-pro-6000-blackwell docker compose up -d
+```
+
+To switch back explicitly:
+
+```bash
+LOCAL_AGENT_GPU_PROFILE=rtx3090 docker compose up -d
+```
+
+Compose recreates the container when the profile changes. Without an override,
+`rtx3090` is the default. With plain `docker run`, add
+`-e LOCAL_AGENT_GPU_PROFILE=rtx-pro-6000-blackwell` before the image name.
 
 | Profile | Context tokens | Prompt batch / microbatch | KV cache | Intended GPU |
 |---|---:|---|---|---|
@@ -178,74 +188,129 @@ Both profiles enable Flash Attention, full GPU offload, one inference slot,
 and MTP with three draft tokens. The Blackwell profile uses the larger GPU's
 memory for longer context, larger prompt batches, and an unquantized KV cache.
 These are starting settings to benchmark on that card; a speedup has not been
-measured. The bundled Q4_K_M model weights are the same in both profiles.
+measured. The bundled Q4_K_M weights are the same in both profiles.
 
 The pinned CUDA 12.8.1 runtime includes native kernels for the RTX 3090
 (`sm_86`) and RTX PRO 6000 Blackwell (`sm_120a`), so both profiles use the same
 image and require no rebuild. See [NVIDIA's compute capability table](https://developer.nvidia.com/cuda/gpus)
 and [the pinned llama.cpp architecture configuration](https://github.com/ggml-org/llama.cpp/blob/4c9233c034fc450dcf34c7c0988aebe6da5cdf1a/ggml/src/ggml-cuda/CMakeLists.txt).
-The host still needs a driver supporting its GPU and CUDA 12.8, plus working
-NVIDIA Container Toolkit GPU access. This Blackwell preset is for the RTX PRO
-6000, not a DGX Spark/GB10 or a B200 system.
+The host's driver must support its GPU and CUDA 12.8, and Docker must have
+working NVIDIA Container Toolkit GPU access.
 
-Explicit llama.cpp `LLAMA_ARG_*` environment settings override profile defaults.
-For example, add these options before the image name to select Blackwell tuning
-with a smaller context and no MTP:
+Explicit llama.cpp environment settings override profile defaults. For example:
 
 ```bash
--e LOCAL_AGENT_GPU_PROFILE=rtx-pro-6000-blackwell \
--e LLAMA_ARG_CTX_SIZE=65536 \
--e LLAMA_ARG_SPEC_TYPE=none
+docker run --rm --gpus all --network host \
+  -e LOCAL_AGENT_GPU_PROFILE=rtx-pro-6000-blackwell \
+  -e LLAMA_ARG_CTX_SIZE=65536 -e LLAMA_ARG_SPEC_TYPE=none \
+  ghcr.io/jgoppert/local_agent:latest
 ```
 
 Additional llama-server arguments go after the image name and take precedence
-over environment settings. The container reads neither `config.local.toml`
-nor the launcher's `CTX` variable. Profile settings live in
-[`docker/entrypoint.sh`](docker/entrypoint.sh); its `rtx3090` defaults mirror the
-shared Qwen preset. When using `./chat.sh` with the Blackwell container, also
-set the client's context to match, for example `CTX=131072 ./chat.sh`.
+over environment settings. Container profiles live in
+[`docker/entrypoint.sh`](docker/entrypoint.sh); the container does not read
+`config.local.toml` or the launcher's `CTX` variable.
 
-### Publishing and rebuilding
+After the container is healthy, the existing `./chat.sh` can reuse its API.
+The client still needs the normal Nix/client prerequisites. Keep its context
+limit consistent with the container: use `./chat.sh` for the default profile,
+or `CTX=131072 ./chat.sh` for the Blackwell profile. Use Docker to manage this
+server's lifetime.
 
-The workflow uses the repository's automatic `GITHUB_TOKEN` with
-`packages: write`; no registry password or additional secret is required.
+### Run without an internet connection
+
+**A network connection is optional after the image has been downloaded.**
+Startup and inference use the files bundled in the image; they do not install
+packages, download models, or run Nix. Compose uses `pull_policy: never`, so
+`docker compose up -d` also works without contacting GHCR. To update, explicitly
+run `docker pull ghcr.io/jgoppert/local_agent:latest` while connected.
+Host networking remains available for local services and future internet access.
+
+To transfer the image to a disconnected machine:
+
+```bash
+# On a connected machine:
+docker pull ghcr.io/jgoppert/local_agent:latest
+docker save ghcr.io/jgoppert/local_agent:latest | gzip > /tmp/local-agent-qwen.tar.gz
+
+# Copy the archive to the prepared offline host, then:
+gzip -dc /tmp/local-agent-qwen.tar.gz | docker load
+docker run -d --name local-agent-model --gpus all --network host \
+  --restart unless-stopped \
+  ghcr.io/jgoppert/local_agent:latest
+```
+
+Install Docker, GPU drivers, and the NVIDIA Container Toolkit on that host
+before disconnecting. External services used by a separate client, such as
+OpenCode's web search, still need a connection when invoked.
+
+A reusable check starts a fresh container with `--network none`, then checks
+health, the model API, the bundled web UI, and a real generated response:
+
+```bash
+bash docker/test-offline.sh ghcr.io/jgoppert/local_agent:latest
+# For a host without Docker GPU access (requires at least 32 GB system RAM):
+bash docker/test-offline.sh ghcr.io/jgoppert/local_agent:latest --cpu
+```
+
+This test's network isolation is only for verification; normal Compose runs
+use host networking.
+
+### Build and publish with the Nix flake
+
+The image is constructed with `dockerTools.buildLayeredImage` in
+[`nix/container.nix`](nix/container.nix), driven by [`flake.nix`](flake.nix)
+and [`flake.lock`](flake.lock). The flake pins nixpkgs, verifies the upstream
+CUDA runtime by image digest and archive hash, verifies the model by pinned
+Hugging Face revision and SHA-256, and splits the GGUF with Nix-provided tools.
+Nix assembles five separate weight layers to stay below
+[GHCR's 10 GB per-layer limit](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#troubleshooting).
+llama.cpp reads the shards directly. The model license and attribution are
+included in the image.
+
+On an x86_64 Linux build host with Nix flakes enabled and at least 60 GB free:
+
+```bash
+nix flake check
+nix build .#dockerImage --out-link result-image
+docker load < result-image  # loads local_agent:latest
+bash docker/test-offline.sh local_agent:latest
+```
+
+To check the runtime/profiles without downloading the model:
+
+```bash
+nix build .#dockerRuntime --out-link result-runtime
+docker load < result-runtime
+bash docker/test-profiles.sh local_agent:runtime-check
+```
+
+Only tracked flake inputs enter the build. Local model files, credentials,
+and `config.local.toml` are excluded. Building needs internet access for any
+inputs missing from the Nix store; running the resulting image does not.
+
+The [GitHub workflow](.github/workflows/container.yml) runs the flake checks,
+tests both profiles without networking, builds `.#dockerImage`, verifies all
+five model shards and layer sizes, and publishes the archive with Skopeo.
+It uses the automatic `GITHUB_TOKEN` with `packages: write`; no registry
+password or extra secret is required.
 
 | Trigger | Result |
 |---|---|
-| Pull request changing image inputs | Build the runtime and check both profiles, overrides, and binary/flags without downloading weights |
-| Push to `main` changing image inputs | Build with weights and publish `latest` and `sha-<full commit>` |
+| Pull request changing image inputs | Flake, Compose, runtime and profile checks without the model download |
+| Push to `main` changing image inputs | Publish `latest` and `sha-<full commit>` with bundled weights |
 | Push a `v*` tag, such as `v1.0.0` | Publish that exact tag and `sha-<full commit>` |
 | Actions → Build and publish Qwen container → Run workflow on `main` | Rebuild and publish `latest` and the commit tag |
 
-Image inputs are `Dockerfile`, `.dockerignore`, `docker/`, and the workflow.
-Version tags build regardless of the changed paths. Only builds from `main`
-update `latest`; a version tag keeps a separately addressable release.
-GitHub-hosted runners check the binary and package the weights without a GPU;
-full GPU inference must be checked on a model host.
+Image inputs are the flake and lock, `nix/container.nix`, `docker/`,
+`compose.yaml`, and the workflow. Version tags build regardless of changed
+paths. Only `main` builds update `latest`. GitHub-hosted runners have no GPU;
+run the offline test on a model host to validate full GPU inference.
 
-GHCR initially creates packages as private, even for a public repository.
-For anonymous pulls, set the package visibility to **Public** in
+GHCR initially creates packages as private, even for public repositories.
+For anonymous pulls, set visibility to **Public** in
 [the package settings](https://github.com/users/jgoppert/packages/container/local_agent/settings).
 See [GitHub's container registry documentation](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#pushing-container-images).
-
-The build pins both upstream llama.cpp images by digest and the Hugging Face
-model by revision and SHA-256. It verifies the original GGUF before splitting
-it into five approximately 4 GB shards, each copied into a separate layer to
-stay below [GHCR's 10 GB per-layer limit](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#troubleshooting).
-llama.cpp reads the shards directly, without reconstructing a second copy.
-The image includes the model's Apache 2.0 license and source attribution.
-
-To build locally, allow at least 55 GB of free Docker storage for the download,
-split files, and exported image, then run:
-
-```bash
-docker build -t local_agent:qwen .
-```
-
-The build downloads the pinned model even if `models/` already exists locally.
-`.dockerignore` excludes local weights, credentials, and Nix outputs from the
-build context. CI frees unused SDK space before building and avoids exporting
-the large intermediate weights layer to a registry cache.
 
 ## Hardware and configuration
 
@@ -659,7 +724,8 @@ will sit unused for a long time.
 | `scripts/shutdown.sh` | stop the model and release its GPU memory |
 | `opencode.json`, `nix/opencode.nix` | OpenCode configuration and pinned binary |
 | `nix/llama-cpp.nix` | pinned llama.cpp with configurable CUDA, Vulkan, or CPU backend |
-| `Dockerfile`, `.dockerignore`, `docker/` | CUDA server image with bundled, verified Qwen weights and model license |
+| `flake.nix`, `flake.lock`, `nix/container.nix` | build the CUDA image with bundled Qwen weights using Nix |
+| `compose.yaml`, `docker/` | host networking, GPU profiles, container checks, and model license |
 | `.github/workflows/container.yml` | check Docker builds and publish model images to GHCR |
 | `scripts/powercap.sh`, `scripts/gpu-status.sh` | GPU power cap and readout |
 | `models/`, `llama-cpp`, `.opencode-runtime`, `.profile-runtime` | downloaded and built artifacts, ignored by Git |
