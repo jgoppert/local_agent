@@ -4,7 +4,11 @@ set -euo pipefail
 image=${1:-local_agent:latest}
 mode=${2:-gpu}
 container="local-agent-offline-test-$$"
-cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; }
+cleanup() {
+    status=$?
+    if (( status != 0 )); then docker logs --tail 60 "$container" >&2 || true; fi
+    docker rm -f "$container" >/dev/null 2>&1 || true
+}
 trap cleanup EXIT
 
 options=(--gpus all)
@@ -35,8 +39,9 @@ if [[ "$ready" != true ]]; then
     exit 1
 fi
 
-docker exec "$container" curl --fail --silent --max-time 10 http://127.0.0.1:8080/v1/models | grep -q 'qwen3.8-27b'
-docker exec "$container" curl --fail --silent --max-time 10 --output /dev/null http://127.0.0.1:8080/
+docker exec "$container" curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8080/v1/models | grep -q 'qwen3.8-27b'
+# Embedded UI assets require Accept-Encoding: gzip (as sent by web browsers).
+docker exec "$container" curl --compressed --fail --silent --show-error --max-time 10 --output /dev/null http://127.0.0.1:8080/
 response=$(docker exec "$container" curl --fail --silent --show-error --max-time 180 \
     --header 'Content-Type: application/json' \
     --data '{"model":"qwen3.8-27b","messages":[{"role":"user","content":"Reply with exactly OK."}],"max_tokens":16,"temperature":0,"chat_template_kwargs":{"enable_thinking":false}}' \
