@@ -298,8 +298,17 @@ one model per server process.
 
 ### Using another model host
 
-Run the client on the machine whose files you want to work with, and specify
-the model host with `--host`. The client runs all file reads, edits, and shell
+To work on files stored on the GPU machine, connect to it with Mosh first and
+run `local_agent` there:
+
+```bash
+mosh gpu-box
+cd ~/git/my-project
+local_agent
+```
+
+To work on files on your current machine instead, specify the model host with
+`--host`. The client runs all file reads, edits, and shell
 commands on the **calling machine**, in the project you open. Model requests
 (including prompts, relevant file contents, and tool results) travel through
 an encrypted [SSH local port forward](https://man.openbsd.org/ssh#L) to the
@@ -409,7 +418,7 @@ port fails explicitly. The model API remains bound to localhost; SSH is the
 only network service needed. The current server has one inference slot, so
 multiple clients share its capacity.
 
-If your project is on a third machine, SSH into that machine and invoke
+If your project is on a third machine, Mosh into that machine and invoke
 `chat.sh --host gpu-box` there. Tools then act on that third machine's files.
 
 ### OpenCode
